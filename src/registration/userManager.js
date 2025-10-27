@@ -1,212 +1,248 @@
-const fs = require('fs').promises;
 const path = require('path');
-const { v4: uuidv4 } = require('uuid');
-const TokenSystem = require('../auth/tokenSystem');
+const fs = require('fs').promises;
 
 class UserManager {
     constructor() {
-        this.usersPath = './data/users';
-        this.tokenSystem = new TokenSystem();
+        this.usersDir = './data/users';
         this.ensureDirectories();
     }
 
     async ensureDirectories() {
         try {
-            await fs.mkdir(this.usersPath, { recursive: true });
+            await fs.mkdir(this.usersDir, { recursive: true });
         } catch (error) {
-            console.error('Error creating directories:', error);
+            console.error('Error creating users directory:', error);
         }
     }
 
-    async startRegistration(jid, bot) {
-        try {
-            // Check if user already exists
-            const existingUser = await this.getUser(jid);
-            if (existingUser) {
-                return await bot.sendMessage(jid, {
-                    text: `❌ Anda sudah terdaftar!\n\n` +
-                          `👤 Username: ${existingUser.username}\n` +
-                          `⭐ Status: ${existingUser.premium ? 'PREMIUM' : 'FREE'}\n` +
-                          `📅 Bergabung: ${new Date(existingUser.registeredAt).toLocaleDateString('id-ID')}`
-                });
-            }
-
-            // Generate registration token
-            const token = this.tokenSystem.generateToken();
-            const registrationData = {
-                jid: jid,
-                token: token,
-                stage: 'awaiting_username',
-                createdAt: new Date().toISOString()
-            };
-
-            // Save temporary registration data
-            await this.saveRegistrationData(jid, registrationData);
-
-            // Send token and instructions
-            const registrationMsg = {
-                text: `🔐 *REGISTRATION PROCESS* 🔐\n\n` +
-                      `📝 *Langkah 1: Simpan Token*\n` +
-                      `Token Anda: *${token}*\n\n` +
-                      `📋 *Langkah 2: Kirim Data*\n` +
-                      `Balas pesan ini dengan format:\n` +
-                      `!daftar [USERNAME] [TOKEN]\n\n` +
-                      `Contoh:\n` +
-                      `!daftar JohnDoe ${token}\n\n` +
-                      `⏰ *Token berlaku 10 menit*`,
-                buttons: [
-                    { buttonId: `!daftar username ${token}`, buttonText: { displayText: '📝 DAFTAR SEKARANG' }, type: 1 }
-                ]
-            };
-
-            await bot.sendMessage(jid, registrationMsg);
-
-        } catch (error) {
-            console.error('Registration error:', error);
-            await bot.sendMessage(jid, {
-                text: '❌ Terjadi error saat registrasi. Silakan coba lagi.'
-            });
-        }
+    getUserFilePath(userId) {
+        return path.join(this.usersDir, `${userId}.json`);
     }
 
-    async completeRegistration(jid, username, token) {
+    async registerUser(userId, userData = {}) {
         try {
-            // Verify token
-            const registrationData = await this.getRegistrationData(jid);
-            if (!registrationData || registrationData.token !== token) {
-                return { success: false, message: 'Token tidak valid atau sudah kadaluarsa' };
-            }
-
-            // Check username availability
-            const usernameExists = await this.checkUsernameExists(username);
-            if (usernameExists) {
-                return { success: false, message: 'Username sudah digunakan' };
-            }
-
-            // Create user data
-            const userData = {
-                jid: jid,
-                username: username,
+            const userFile = this.getUserFilePath(userId);
+            const user = {
+                id: userId,
+                name: userData.name || 'User',
                 premium: false,
-                premiumExpiry: null,
                 registeredAt: new Date().toISOString(),
-                lastActive: new Date().toISOString(),
+                level: 1,
+                exp: 0,
                 stats: {
                     messagesSent: 0,
-                    commandsUsed: 0,
                     gamesPlayed: 0,
-                    downloads: 0
+                    downloads: 0,
+                    voiceNotes: 0,
+                    commandsUsed: 0
                 },
-                preferences: {
-                    language: 'id',
-                    theme: 'default',
-                    aiPersonality: 'friendly'
-                }
+                lastActive: new Date().toISOString(),
+                ...userData
             };
 
-            // Save user data
-            await this.saveUserData(jid, userData);
-
-            // Clean up registration data
-            await this.deleteRegistrationData(jid);
-
-            return {
-                success: true,
-                message: 'Registrasi berhasil!',
-                user: userData
-            };
-
+            await fs.writeFile(userFile, JSON.stringify(user, null, 2));
+            return user;
         } catch (error) {
-            console.error('Complete registration error:', error);
-            return { success: false, message: 'Error saat menyelesaikan registrasi' };
+            console.error('Error registering user:', error);
+            throw error;
         }
     }
 
-    async getUser(jid) {
+    async getUser(userId) {
         try {
-            const userFile = path.join(this.usersPath, `${jid.replace(/[@\.]/g, '_')}.json`);
+            const userFile = this.getUserFilePath(userId);
             const data = await fs.readFile(userFile, 'utf8');
             return JSON.parse(data);
         } catch (error) {
-            return null;
-        }
-    }
-
-    async saveUserData(jid, userData) {
-        const userFile = path.join(this.usersPath, `${jid.replace(/[@\.]/g, '_')}.json`);
-        await fs.writeFile(userFile, JSON.stringify(userData, null, 2));
-    }
-
-    async saveRegistrationData(jid, data) {
-        const regFile = path.join(this.usersPath, `reg_${jid.replace(/[@\.]/g, '_')}.json`);
-        await fs.writeFile(regFile, JSON.stringify(data, null, 2));
-    }
-
-    async getRegistrationData(jid) {
-        try {
-            const regFile = path.join(this.usersPath, `reg_${jid.replace(/[@\.]/g, '_')}.json`);
-            const data = await fs.readFile(regFile, 'utf8');
-            return JSON.parse(data);
-        } catch (error) {
-            return null;
-        }
-    }
-
-    async deleteRegistrationData(jid) {
-        try {
-            const regFile = path.join(this.usersPath, `reg_${jid.replace(/[@\.]/g, '_')}.json`);
-            await fs.unlink(regFile);
-        } catch (error) {
-            // File doesn't exist, ignore
-        }
-    }
-
-    async checkUsernameExists(username) {
-        try {
-            const files = await fs.readdir(this.usersPath);
-            for (const file of files) {
-                if (file.startsWith('reg_')) continue;
-                
-                const data = await fs.readFile(path.join(this.usersPath, file), 'utf8');
-                const user = JSON.parse(data);
-                if (user.username === username) {
-                    return true;
-                }
+            if (error.code === 'ENOENT') {
+                return null;
             }
-            return false;
-        } catch (error) {
-            return false;
+            console.error('Error reading user:', error);
+            throw error;
         }
     }
 
-    async updateUserStats(jid, field, increment = 1) {
+    async getOrCreateUser(userId, userData = {}) {
+        let user = await this.getUser(userId);
+        if (!user) {
+            user = await this.registerUser(userId, userData);
+        }
+        return user;
+    }
+
+    async updateUser(userId, updates) {
         try {
-            const user = await this.getUser(jid);
-            if (user && user.stats) {
-                user.stats[field] = (user.stats[field] || 0) + increment;
-                user.lastActive = new Date().toISOString();
-                await this.saveUserData(jid, user);
+            const user = await this.getUser(userId);
+            if (!user) {
+                throw new Error('User not found');
             }
+
+            const updatedUser = {
+                ...user,
+                ...updates,
+                lastActive: new Date().toISOString()
+            };
+
+            const userFile = this.getUserFilePath(userId);
+            await fs.writeFile(userFile, JSON.stringify(updatedUser, null, 2));
+            return updatedUser;
         } catch (error) {
-            console.error('Error updating user stats:', error);
+            console.error('Error updating user:', error);
+            throw error;
+        }
+    }
+
+    // FIXED: Tambahkan method incrementStat yang hilang
+    async incrementStat(userId, statName, amount = 1) {
+        try {
+            const user = await this.getUser(userId);
+            if (!user) {
+                // Jika user tidak ada, buat user baru
+                return await this.registerUser(userId);
+            }
+
+            // Inisialisasi stats jika belum ada
+            if (!user.stats) {
+                user.stats = {
+                    messagesSent: 0,
+                    gamesPlayed: 0,
+                    downloads: 0,
+                    voiceNotes: 0,
+                    commandsUsed: 0
+                };
+            }
+
+            // Update stat
+            if (!user.stats[statName]) {
+                user.stats[statName] = 0;
+            }
+
+            user.stats[statName] += amount;
+            user.lastActive = new Date().toISOString();
+
+            // Add EXP for activity
+            user.exp = (user.exp || 0) + Math.floor(amount / 2);
+
+            // Level up check
+            const expNeeded = (user.level || 1) * 100;
+            if (user.exp >= expNeeded) {
+                user.level = (user.level || 1) + 1;
+                user.exp = user.exp - expNeeded;
+            }
+
+            const userFile = this.getUserFilePath(userId);
+            await fs.writeFile(userFile, JSON.stringify(user, null, 2));
+            return user;
+        } catch (error) {
+            console.error('Error incrementing stat:', error);
+            // Return minimal user object instead of throwing
+            return {
+                id: userId,
+                stats: { [statName]: amount }
+            };
         }
     }
 
     async getAllUsers() {
         try {
-            const files = await fs.readdir(this.usersPath);
+            const files = await fs.readdir(this.usersDir);
             const users = [];
-            
+
             for (const file of files) {
-                if (file.startsWith('reg_')) continue;
-                
-                const data = await fs.readFile(path.join(this.usersPath, file), 'utf8');
-                users.push(JSON.parse(data));
+                if (file.endsWith('.json')) {
+                    try {
+                        const data = await fs.readFile(path.join(this.usersDir, file), 'utf8');
+                        users.push(JSON.parse(data));
+                    } catch (error) {
+                        console.error(`Error reading user file ${file}:`, error);
+                    }
+                }
             }
-            
+
             return users;
         } catch (error) {
+            console.error('Error getting all users:', error);
             return [];
+        }
+    }
+
+    async getTopUsers(limit = 10, sortBy = 'level') {
+        try {
+            const users = await this.getAllUsers();
+            return users
+                .sort((a, b) => {
+                    if (sortBy === 'level') {
+                        return (b.level || 1) - (a.level || 1) || (b.exp || 0) - (a.exp || 0);
+                    } else if (sortBy === 'messages') {
+                        return (b.stats?.messagesSent || 0) - (a.stats?.messagesSent || 0);
+                    }
+                    return 0;
+                })
+                .slice(0, limit);
+        } catch (error) {
+            console.error('Error getting top users:', error);
+            return [];
+        }
+    }
+
+    async setPremium(userId, premium = true) {
+        return await this.updateUser(userId, { premium });
+    }
+
+    async addExp(userId, expAmount) {
+        try {
+            const user = await this.getUser(userId);
+            if (!user) {
+                return null;
+            }
+
+            user.exp = (user.exp || 0) + expAmount;
+            const expNeeded = (user.level || 1) * 100;
+
+            // Level up
+            while (user.exp >= expNeeded) {
+                user.level = (user.level || 1) + 1;
+                user.exp -= expNeeded;
+            }
+
+            const userFile = this.getUserFilePath(userId);
+            await fs.writeFile(userFile, JSON.stringify(user, null, 2));
+            return user;
+        } catch (error) {
+            console.error('Error adding EXP:', error);
+            throw error;
+        }
+    }
+
+    // Tambahkan method untuk mendapatkan statistik user
+    async getUserStats(userId) {
+        try {
+            const user = await this.getUser(userId);
+            if (!user) {
+                return {
+                    messagesSent: 0,
+                    gamesPlayed: 0,
+                    downloads: 0,
+                    voiceNotes: 0,
+                    commandsUsed: 0
+                };
+            }
+            return user.stats || {
+                messagesSent: 0,
+                gamesPlayed: 0,
+                downloads: 0,
+                voiceNotes: 0,
+                commandsUsed: 0
+            };
+        } catch (error) {
+            console.error('Error getting user stats:', error);
+            return {
+                messagesSent: 0,
+                gamesPlayed: 0,
+                downloads: 0,
+                voiceNotes: 0,
+                commandsUsed: 0
+            };
         }
     }
 }

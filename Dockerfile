@@ -1,10 +1,8 @@
-# Gunakan base image Node.js yang kompatibel
 FROM node:20-slim
 
-# Set working directory
 WORKDIR /app
 
-# Install git dan dependencies yang diperlukan
+# Install system dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     git \
@@ -12,22 +10,26 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Copy package.json
+# Copy package files
 COPY package*.json ./
 
-# Install dependencies - otomatis menangani ada/tidaknya package-lock.json
-RUN if [ -f package-lock.json ]; then \
-        npm ci --only=production --no-audit --no-fund; \
-    else \
-        npm install --production --no-audit --no-fund; \
-    fi \
-        npm install @whiskeysockets/baileys qrcode-terminal pino @hapi/boom jimp axios
+# Install all dependencies
+RUN npm install --no-audit --no-fund
 
-# Copy source code aplikasi
+# Copy source code
 COPY . .
 
-# Expose port (sesuaikan dengan port aplikasi Anda)
-EXPOSE 3000
+# Create necessary directories
+RUN mkdir -p data/public/images/menus \
+    data/public/images/wallpapers \
+    data/public/images/backgrounds \
+    data/public/images/wibu \
+    data/public/assets/fonts \
+    data/users \
+    auth_info
 
-# Command untuk menjalankan aplikasi
+# Expose port (if needed)
+# EXPOSE 3000
+
+# Start the application
 CMD ["npm", "start"]

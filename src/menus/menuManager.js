@@ -73,3 +73,4 @@ class MenuManager {
 }
 
 module.exports = MenuManager;
+

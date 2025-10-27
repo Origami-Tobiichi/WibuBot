@@ -1,6 +1,5 @@
 # Gunakan image Node.js yang ringan
-FROM node:20-alpine
-
+FROM node:20-slim
 # Set direktori kerja di container
 WORKDIR /app
 

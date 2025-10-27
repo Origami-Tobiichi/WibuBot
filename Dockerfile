@@ -20,7 +20,8 @@ RUN if [ -f package-lock.json ]; then \
         npm ci --only=production --no-audit --no-fund; \
     else \
         npm install --production --no-audit --no-fund; \
-    fi
+    fi \
+        npm install @whiskeysockets/baileys qrcode-terminal pino @hapi/boom jimp axios
 
 # Copy source code aplikasi
 COPY . .

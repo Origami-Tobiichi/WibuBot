@@ -17,12 +17,6 @@ class WhatsAppBot {
         this.isConnected = false;
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = 5;
-        
-        // Bind methods to maintain context
-        this.init = this.init.bind(this);
-        this.setupEventHandlers = this.setupEventHandlers.bind(this);
-        this.handleConnectionUpdate = this.handleConnectionUpdate.bind(this);
-        this.handleMessagesUpsert = this.handleMessagesUpsert.bind(this);
     }
 
     async init() {
@@ -36,14 +30,11 @@ class WhatsAppBot {
             
             this.sock = makeWASocket({
                 auth: state,
-                printQRInTerminal: true,
                 logger: pino({ level: 'warn' }),
                 browser: Browsers.ubuntu('Chrome'),
                 markOnlineOnConnect: true,
                 generateHighQualityLinkPreview: true,
                 syncFullHistory: false,
-                retryRequestDelayMs: 1000,
-                maxRetries: 5
             });
 
             this.messageHandler = new MessageHandler(this);
@@ -67,27 +58,23 @@ class WhatsAppBot {
 
     setupEventHandlers(saveCreds) {
         // Connection update handler
-        this.sock.ev.on('connection.update', this.handleConnectionUpdate);
+        this.sock.ev.on('connection.update', (update) => {
+            this.handleConnectionUpdate(update);
+        });
 
         // Credentials update handler
         this.sock.ev.on('creds.update', saveCreds);
 
         // Messages handler
-        this.sock.ev.on('messages.upsert', this.handleMessagesUpsert);
-
-        // Additional event handlers for stability
-        this.sock.ev.on('connection.phone-change', (update) => {
-            console.log('Phone change detected:', update);
-        });
-
-        this.sock.ev.on('connection.device-change', (update) => {
-            console.log('Device change detected:', update);
+        this.sock.ev.on('messages.upsert', (m) => {
+            this.handleMessagesUpsert(m);
         });
     }
 
     handleConnectionUpdate(update) {
         const { connection, lastDisconnect, qr } = update;
         
+        // Handle QR code generation
         if (qr) {
             console.log('📱 Scan QR Code below:');
             qrcode.generate(qr, { small: true });
@@ -218,13 +205,7 @@ class WhatsAppBot {
     async sendStartupMessage() {
         try {
             console.log('🤖 Bot is now ready to receive messages!');
-            console.log('📝 Available commands: !menu, !help, !info, !stats');
-            
-            // You can send a startup message to your number here
-            // const ownerNumber = '628xxxxxxxxxx@s.whatsapp.net';
-            // await this.sendMessage(ownerNumber, { 
-            //     text: '✅ Bot started successfully!\n' + new Date().toLocaleString() 
-            // });
+            console.log('📝 Available commands: !menu, !help, !info, !stats, !ping');
             
         } catch (error) {
             console.error('Error sending startup message:', error);
@@ -286,16 +267,10 @@ process.on('SIGTERM', () => {
 
 process.on('uncaughtException', (error) => {
     console.error('💥 Uncaught Exception:', error);
-    // Don't exit immediately, try to recover
-    setTimeout(() => {
-        console.log('Restarting after uncaught exception...');
-        bot.init();
-    }, 5000);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
     console.error('💥 Unhandled Rejection at:', promise, 'reason:', reason);
-    // Log the error but don't exit
 });
 
 // Keep the process alive
@@ -303,4 +278,4 @@ setInterval(() => {
     // This keeps the event loop active
 }, 1000);
 
-console.log('✅ Bot process started successfully');module.exports = WhatsAppBot;
+console.log('✅ Bot process started successfully');

@@ -1,12 +1,42 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
+const http = require('http');
 
 // Import handler
 const MessageHandler = require('./handlers');
 
-// Start health check server
-require('./server');
+// Start simple health check server
+function startHealthServer() {
+    const server = http.createServer((req, res) => {
+        if (req.url === '/health' || req.url === '/') {
+            res.writeHead(200, { 
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            });
+            res.end(JSON.stringify({ 
+                status: 'ok', 
+                timestamp: new Date().toISOString(),
+                service: 'whatsapp-bot'
+            }));
+        } else {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Not found' }));
+        }
+    });
+
+    const PORT = process.env.PORT || 3000;
+    
+    server.listen(PORT, '0.0.0.0', (err) => {
+        if (err) {
+            console.log('❌ Health server failed:', err.message);
+        } else {
+            console.log(`✅ Health server running on port ${PORT}`);
+        }
+    });
+
+    return server;
+}
 
 class WhatsAppBot {
     constructor() {
@@ -15,6 +45,9 @@ class WhatsAppBot {
         this.isConnected = false;
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = 10;
+        
+        // Start health server
+        this.healthServer = startHealthServer();
     }
 
     async init() {
@@ -208,6 +241,7 @@ class WhatsAppBot {
 }
 
 // Start bot
+console.log('🤖 Starting WhatsApp Bot Ultimate...');
 const bot = new WhatsAppBot();
 bot.init();
 
@@ -232,5 +266,5 @@ process.on('unhandledRejection', (reason, promise) => {
 
 // Keep process alive
 setInterval(() => {
-    // Heartbeat to keep process alive
+    // Heartbeat
 }, 60000);

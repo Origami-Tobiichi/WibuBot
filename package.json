@@ -1,8 +1,7 @@
 {
   "name": "whatsapp-bot-ultimate",
   "version": "3.0.0",
-  "description": "Advanced WhatsApp Bot with AI, Games, Downloader, and Prem
-ium Features",
+  "description": "Advanced WhatsApp Bot with AI, Games, Downloader, and Premium Features",
   "main": "src/bot/whatsapp.js",
   "scripts": {
     "start": "node src/bot/whatsapp.js",
@@ -39,3 +38,4 @@ ium Features",
     "node": ">=18.0.0"
   }
 }
+

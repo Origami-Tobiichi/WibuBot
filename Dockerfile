@@ -4,7 +4,7 @@ FROM node:20-slim
 # Set working directory
 WORKDIR /app
 
-# Install git dan dependencies yang diperlukan (untuk package yang memerlukan kompilasi native)
+# Install git dan dependencies yang diperlukan
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     git \
@@ -12,14 +12,15 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Copy package.json dan package-lock.json (jika ada)
+# Copy package.json
 COPY package*.json ./
 
-# Install dependencies
-RUN npm ci --only=production --no-audit --no-fund
-
-# Alternatif: jika tidak ada package-lock.json, gunakan:
-# RUN npm install --production --no-audit --no-fund
+# Install dependencies - otomatis menangani ada/tidaknya package-lock.json
+RUN if [ -f package-lock.json ]; then \
+        npm ci --only=production --no-audit --no-fund; \
+    else \
+        npm install --production --no-audit --no-fund; \
+    fi
 
 # Copy source code aplikasi
 COPY . .

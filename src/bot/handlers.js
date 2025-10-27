@@ -1,139 +1,369 @@
-const MenuManager = require('../menus/menuManager');
 const UserManager = require('../registration/userManager');
-const AIService = require('../ai/openai');
+const MenuManager = require('../menus/menuManager');
+const SystemInfo = require('../utils/systemInfo');
 const GameManager = require('../features/games/gameManager');
-const DownloadManager = require('../features/downloader/downloadManager');
-const AppManager = require('../apps/appManager');
-const AdultManager = require('../adult/adultManager');
-const WibuManager = require('../wibu/wibuManager');
 
 class MessageHandler {
     constructor(bot) {
         this.bot = bot;
-        this.menuManager = new MenuManager();
         this.userManager = new UserManager();
-        this.aiService = new AIService();
+        this.menuManager = new MenuManager();
         this.gameManager = new GameManager();
-        this.downloadManager = new DownloadManager();
-        this.appManager = new AppManager();
-        this.adultManager = new AdultManager();
-        this.wibuManager = new WibuManager();
+        this.buttonManager = bot.getButtonManager();
         
-        this.commands = new Map();
-        this.setupCommands();
-    }
-
-    setupCommands() {
-        // Basic commands
-        this.commands.set('menu', this.handleMenu.bind(this));
-        this.commands.set('help', this.handleMenu.bind(this));
-        this.commands.set('start', this.handleStart.bind(this));
-        this.commands.set('register', this.handleRegister.bind(this));
-        this.commands.set('premium', this.handlePremium.bind(this));
-        
-        // AI commands
-        this.commands.set('ai', this.handleAI.bind(this));
-        this.commands.set('ask', this.handleAI.bind(this));
-        
-        // Game commands
-        this.commands.set('game', this.handleGames.bind(this));
-        this.commands.set('tebakgambar', this.handleTebakGambar.bind(this));
-        this.commands.set('mathquiz', this.handleMathQuiz.bind(this));
-        
-        // Download commands
-        this.commands.set('download', this.handleDownload.bind(this));
-        this.commands.set('yt', this.handleYoutube.bind(this));
-        this.commands.set('ig', this.handleInstagram.bind(this));
-        this.commands.set('tiktok', this.handleTiktok.bind(this));
-        
-        // App commands
-        this.commands.set('app', this.handleApps.bind(this));
-        this.commands.set('ml', this.handleMobileLegends.bind(this));
-        
-        // Adult commands (premium only)
-        this.commands.set('nsfw', this.handleNSFW.bind(this));
-        this.commands.set('hentai', this.handleHentai.bind(this));
-        
-        // Wibu commands
-        this.commands.set('wibu', this.handleWibu.bind(this));
-        this.commands.set('anime', this.handleAnime.bind(this));
+        // Initialize commands - FIXED: Remove setupCommands call
+        this.commands = {
+            'menu': this.handleMenu.bind(this),
+            'help': this.handleHelp.bind(this),
+            'stats': this.handleStats.bind(this),
+            'register': this.handleRegister.bind(this),
+            'info': this.handleInfo.bind(this),
+            'wibu': this.handleWibu.bind(this),
+            'wallpaper': this.handleWallpaper.bind(this),
+            'game': this.handleGame.bind(this),
+            'buttons': this.handleButtons.bind(this),
+            'start': this.handleStart.bind(this),
+            'ping': this.handlePing.bind(this)
+        };
     }
 
     async handleMessage(message) {
-        const jid = message.key.remoteJid;
-        const text = this.extractText(message);
-        
-        // Check if user is registered
-        const user = await this.userManager.getUser(jid);
-        if (!user && !text?.startsWith('!register')) {
-            return this.sendRegistrationPrompt(jid);
-        }
-
-        // Handle commands
-        if (text?.startsWith('!')) {
-            const command = text.slice(1).toLowerCase().split(' ')[0];
-            const handler = this.commands.get(command);
+        try {
+            const { from, body, type, isGroup } = message;
             
-            if (handler) {
-                await handler(jid, message, text);
-            } else {
-                await this.handleAIResponse(jid, text.slice(1));
+            // Ignore messages without body
+            if (!body) return;
+            
+            // Update user activity
+            await this.userManager.incrementStat(from, 'messagesSent');
+            
+            // Check if user has active game (handle game answers)
+            const activeGame = this.gameManager.getActiveGame(from);
+            if (activeGame && body && !body.startsWith('!')) {
+                const result = this.gameManager.checkAnswer(from, body);
+                
+                if (result.error) {
+                    await this.bot.sendMessage(from, { text: result.error });
+                } else {
+                    await this.bot.sendMessage(from, { text: result.message });
+                    
+                    if (result.correct) {
+                        // Give bonus EXP for winning
+                        await this.userManager.addExp(from, 10);
+                    }
+                }
+                return;
             }
-        } else {
-            // Auto-reply with AI for non-command messages
-            await this.handleAIResponse(jid, text);
+            
+            // Check if it's a command
+            if (body.startsWith('!')) {
+                const command = body.slice(1).toLowerCase().split(' ')[0];
+                
+                if (this.commands[command]) {
+                    await this.commands[command](message);
+                } else {
+                    await this.bot.sendMessage(from, { 
+                        text: `❌ Command tidak dikenali. Ketik !help untuk melihat daftar command.` 
+                    });
+                }
+            }
+        } catch (error) {
+            console.error('Error handling message:', error);
         }
     }
 
-    async handleMenu(jid, message, text) {
-        const user = await this.userManager.getUser(jid);
-        const menu = await this.menuManager.generateMainMenu(user);
+    async handleMenu(message) {
+        try {
+            const { from } = message;
+            const user = await this.userManager.getOrCreateUser(from);
+            
+            // Send button menu
+            const buttonMessage = this.buttonManager.getMainMenuButtons();
+            await this.bot.sendButtonMessage(from, buttonMessage);
+
+            await this.userManager.incrementStat(from, 'commandsUsed');
+        } catch (error) {
+            console.error('Error handling menu:', error);
+            await this.bot.sendMessage(from, {
+                text: '❌ Error generating menu. Please try again.'
+            });
+        }
+    }
+
+    async handleButtons(message) {
+        try {
+            const { from, body } = message;
+            const args = body.split(' ').slice(1);
+            const buttonType = args[0] || 'main';
+            
+            let buttonMessage;
+            switch (buttonType) {
+                case 'games':
+                    buttonMessage = this.buttonManager.getGameButtons();
+                    break;
+                case 'tools':
+                    buttonMessage = this.buttonManager.getToolButtons();
+                    break;
+                case 'wibu':
+                    buttonMessage = this.buttonManager.getWibuButtons();
+                    break;
+                default:
+                    buttonMessage = this.buttonManager.getMainMenuButtons();
+            }
+            
+            await this.bot.sendButtonMessage(from, buttonMessage);
+            await this.userManager.incrementStat(from, 'commandsUsed');
+            
+        } catch (error) {
+            console.error('Error handling buttons:', error);
+            await this.bot.sendMessage(from, {
+                text: '❌ Error sending buttons. Please try again.'
+            });
+        }
+    }
+
+    async handleHelp(message) {
+        const { from } = message;
         
-        await this.bot.sendMessage(jid, menu);
+        const helpText = `🆘 *BOT HELP MENU*
+
+🤖 *Basic Commands:*
+!menu - Show bot menu with buttons
+!help - Show this help
+!info - Bot information
+!stats - Your statistics
+!register - Register user
+!ping - Check bot response
+
+🎮 *Entertainment:*
+!game - Games list
+!wibu - Generate wibu image
+!wallpaper - Create wallpaper
+
+🛠️ *Tools:*
+!buttons [type] - Show buttons (games/tools/wibu)
+
+📥 *Downloader:*
+!yt [url] - Download YouTube
+!tiktok [url] - Download TikTok
+!ig [url] - Download Instagram
+
+Type !menu for interactive buttons!`;
+
+        await this.bot.sendMessage(from, { text: helpText });
+        await this.userManager.incrementStat(from, 'commandsUsed');
     }
 
-    async handleStart(jid, message, text) {
-        const welcomeMsg = {
-            text: `🎉 *WELCOME TO ULTIMATE WHATSAPP BOT* 🎉\n\n` +
-                  `🤖 *Advanced AI-Powered WhatsApp Bot*\n` +
-                  `⭐ *Premium Features Available*\n` +
-                  `🎮 *Games & Entertainment*\n` +
-                  `📥 *Media Downloader*\n` +
-                  `🎯 *Smart Auto-Reply*\n\n` +
-                  `Type !menu to see all features!`,
-            buttons: [
-                { buttonId: '!menu', buttonText: { displayText: '📋 MAIN MENU' }, type: 1 },
-                { buttonId: '!register', buttonText: { displayText: '📝 REGISTER' }, type: 1 }
-            ]
-        };
+    async handleStats(message) {
+        try {
+            const { from } = message;
+            const user = await this.userManager.getOrCreateUser(from);
+            
+            const statsImage = await this.menuManager.generateStats(user);
+            
+            await this.bot.sendMessage(from, {
+                image: { url: `file://${statsImage}` },
+                caption: '📊 *YOUR STATISTICS*'
+            });
+
+            await this.userManager.incrementStat(from, 'commandsUsed');
+        } catch (error) {
+            console.error('Error handling stats:', error);
+            await this.bot.sendMessage(from, {
+                text: '❌ Error generating stats. Please try again.'
+            });
+        }
+    }
+
+    async handleRegister(message) {
+        try {
+            const { from, pushName } = message;
+            const user = await this.userManager.registerUser(from, { name: pushName });
+            
+            await this.bot.sendMessage(from, {
+                text: `✅ *Registration Successful!*\n\n👤 Name: ${user.name}\n📅 Registered: ${new Date(user.registeredAt).toLocaleDateString()}\n⭐ Status: ${user.premium ? 'PREMIUM' : 'FREE'}\n\nUse !menu to see available features.`
+            });
+
+            await this.userManager.incrementStat(from, 'commandsUsed');
+        } catch (error) {
+            console.error('Error handling register:', error);
+            await this.bot.sendMessage(from, {
+                text: '❌ Error during registration. Please try again.'
+            });
+        }
+    }
+
+    async handleInfo(message) {
+        const { from } = message;
+        const systemInfo = SystemInfo.getSystemInfo();
         
-        await this.bot.sendMessage(jid, welcomeMsg);
+        const infoText = `🤖 *BOT INFORMATION*
+
+📱 *Version:* 3.0.0
+⚡ *Uptime:* ${systemInfo.uptime}
+💾 *Memory:* ${systemInfo.memory}
+🖥️ *Platform:* ${systemInfo.platform}
+🔢 *Node.js:* ${systemInfo.nodeVersion}
+
+👥 *Total Users:* ${(await this.userManager.getAllUsers()).length}
+
+🌐 *Developer:* WibuBot Team
+📚 *Library:* Baileys MD`;
+
+        await this.bot.sendMessage(from, { text: infoText });
+        await this.userManager.incrementStat(from, 'commandsUsed');
     }
 
-    async handleRegister(jid, message, text) {
-        await this.userManager.startRegistration(jid, this.bot);
+    async handleWibu(message) {
+        try {
+            const { from, body } = message;
+            const args = body.split(' ').slice(1);
+            
+            const wibuData = {
+                characterName: args[0] || 'Waifu',
+                anime: args[1] || 'Unknown Anime',
+                quote: args.slice(2).join(' ') || 'Kawaii desu ne!',
+                type: 'waifu'
+            };
+
+            const wibuImage = await this.menuManager.imageGenerator.generateWibuImage(wibuData);
+            
+            await this.bot.sendMessage(from, {
+                image: { url: `file://${wibuImage}` },
+                caption: `🌸 *${wibuData.characterName}* from *${wibuData.anime}*`
+            });
+
+            await this.userManager.incrementStat(from, 'commandsUsed');
+        } catch (error) {
+            console.error('Error handling wibu:', error);
+            await this.bot.sendMessage(from, {
+                text: '❌ Error generating wibu image. Please try again.'
+            });
+        }
     }
 
-    extractText(message) {
-        return (
-            message.message?.conversation ||
-            message.message?.extendedTextMessage?.text ||
-            message.message?.imageMessage?.caption ||
-            ''
-        );
+    async handleWallpaper(message) {
+        try {
+            const { from, body } = message;
+            const type = body.split(' ')[1] || 'default';
+            
+            const validTypes = ['default', 'premium', 'gaming', 'anime'];
+            const wallpaperType = validTypes.includes(type) ? type : 'default';
+
+            const wallpaperImage = await this.menuManager.imageGenerator.createWallpaper(wallpaperType);
+            
+            await this.bot.sendMessage(from, {
+                image: { url: `file://${wallpaperImage}` },
+                caption: `🎨 *${wallpaperType.toUpperCase()} WALLPAPER*`
+            });
+
+            await this.userManager.incrementStat(from, 'commandsUsed');
+        } catch (error) {
+            console.error('Error handling wallpaper:', error);
+            await this.bot.sendMessage(from, {
+                text: '❌ Error generating wallpaper. Please try again.'
+            });
+        }
     }
 
-    async sendRegistrationPrompt(jid) {
-        const prompt = {
-            text: `🔐 *REGISTRATION REQUIRED*\n\n` +
-                  `You need to register before using this bot.\n` +
-                  `Click the button below to start registration.`,
-            buttons: [
-                { buttonId: '!register', buttonText: { displayText: '📝 REGISTER NOW' }, type: 1 }
-            ]
-        };
+    async handleGame(message) {
+        try {
+            const { from, body } = message;
+            const args = body.split(' ').slice(1);
+            
+            if (args.length === 0) {
+                // Show game list with buttons
+                const buttonMessage = this.buttonManager.getGameButtons();
+                await this.bot.sendButtonMessage(from, buttonMessage);
+                return;
+            }
+
+            const gameType = args[0].toLowerCase();
+            
+            // Check if user has active game
+            const activeGame = this.gameManager.getActiveGame(from);
+            if (activeGame && args[0] !== 'stop') {
+                await this.bot.sendMessage(from, {
+                    text: `Kamu masih dalam game *${activeGame.gameType}*. Ketik !game stop untuk menghentikan game saat ini.`
+                });
+                return;
+            }
+
+            if (gameType === 'stop') {
+                const result = this.gameManager.endGame(from);
+                await this.bot.sendMessage(from, { text: result });
+                return;
+            }
+
+            // Start new game
+            const result = this.gameManager.startGame(from, gameType);
+            
+            if (result.error) {
+                await this.bot.sendMessage(from, { 
+                    text: `❌ ${result.error}\n\nKetik !game untuk melihat daftar game.` 
+                });
+                return;
+            }
+
+            const gameData = result.data;
+            let gameText = `🎮 *MEMULAI GAME ${gameType.toUpperCase()}*\n\n`;
+            
+            if (gameType === 'tebakgambar') {
+                gameText += `${gameData.image}\n`;
+            }
+            
+            gameText += `❓ ${gameData.question}\n\n`;
+            gameText += `⚡ Tebak jawabannya dengan mengetik jawaban kamu!\n`;
+            gameText += `📝 Kamu punya ${gameData.maxAttempts} kesempatan\n\n`;
+            gameText += `⏹️ Ketik !game stop untuk menghentikan game`;
+
+            await this.bot.sendMessage(from, { text: gameText });
+            await this.userManager.incrementStat(from, 'gamesPlayed');
+
+        } catch (error) {
+            console.error('Error handling game:', error);
+            await this.bot.sendMessage(from, {
+                text: '❌ Error memulai game. Silakan coba lagi.'
+            });
+        }
+    }
+
+    async handleStart(message) {
+        const { from, pushName } = message;
         
-        await this.bot.sendMessage(jid, prompt);
+        const welcomeText = `👋 *Halo ${pushName || 'User'}!*
+
+Selamat datang di *WhatsApp Bot Ultimate*! 🤖
+
+Saya adalah bot WhatsApp dengan berbagai fitur menarik:
+
+🎮 *Games* - Tebak kata, tebak gambar, dll
+🌸 *Wibu Mode* - Generate karakter anime
+🛠️ *Tools* - Downloader, converter, dll
+📊 *Statistics* - Track aktivitas kamu
+
+Ketik !menu untuk melihat menu lengkap
+Ketik !help untuk bantuan
+Ketik !register untuk mendaftar
+
+*Enjoy using the bot!* 😊`;
+
+        await this.bot.sendMessage(from, { text: welcomeText });
+        await this.userManager.getOrCreateUser(from, { name: pushName });
+    }
+
+    async handlePing(message) {
+        const { from } = message;
+        const start = Date.now();
+        
+        await this.bot.sendMessage(from, { text: '🏓 Pong!' });
+        const latency = Date.now() - start;
+        
+        await this.bot.sendMessage(from, { 
+            text: `⏱️ *Latency:* ${latency}ms\n✅ *Status:* Bot is running!` 
+        });
+        
+        await this.userManager.incrementStat(from, 'commandsUsed');
     }
 }
 

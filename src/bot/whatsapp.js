@@ -5,6 +5,9 @@ const qrcode = require('qrcode-terminal');
 // Import handler
 const MessageHandler = require('./handlers');
 
+// Start health check server
+require('./server');
+
 class WhatsAppBot {
     constructor() {
         this.sock = null;
@@ -24,7 +27,7 @@ class WhatsAppBot {
             this.sock = makeWASocket({
                 auth: state,
                 version,
-                logger: pino({ level: 'silent' }),
+                logger: pino({ level: 'warn' }),
                 printQRInTerminal: false,
                 browser: ['Ubuntu', 'Chrome', '20.0.04'],
                 markOnlineOnConnect: true,
@@ -33,7 +36,6 @@ class WhatsAppBot {
                 retryRequestDelayMs: 2000,
                 maxRetries: 3,
                 connectTimeoutMs: 60000,
-                keepAliveIntervalMs: 10000
             });
 
             this.messageHandler = new MessageHandler(this);
@@ -62,44 +64,38 @@ class WhatsAppBot {
     handleConnectionUpdate(update) {
         const { connection, lastDisconnect, qr, isNewLogin } = update;
         
-        console.log('🔗 Connection update:', {
-            connection,
-            qr: qr ? 'QR Received' : 'No QR',
-            isNewLogin
-        });
-
-        // Handle QR Code - FIXED: Always display QR when received
+        console.log('🔗 Connection update:', connection);
+        
+        // Handle QR Code
         if (qr) {
-            console.log('\n📱 ==================================');
+            console.log('\n'.repeat(2));
+            console.log('📱 ==================================');
             console.log('📱 SCAN THIS QR CODE WITH WHATSAPP:');
-            console.log('📱 ==================================\n');
+            console.log('📱 ==================================');
             qrcode.generate(qr, { small: true });
-            console.log('\n📱 ==================================\n');
-            
-            // Also log the QR as string for debugging
-            console.log('🔍 QR String:', qr.substring(0, 50) + '...');
+            console.log('📱 ==================================');
+            console.log('📱     SCAN WITH WHATSAPP APP       ');
+            console.log('📱 ==================================');
+            console.log('\n'.repeat(2));
         }
 
         if (connection === 'close') {
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             const error = lastDisconnect?.error;
             
-            console.log('🔌 Connection closed:', {
-                statusCode,
-                error: error?.message || 'Unknown error'
-            });
+            console.log('🔌 Connection closed. Status:', statusCode);
 
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
             
             if (shouldReconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
                 this.reconnectAttempts++;
-                const delay = Math.min(5000 * this.reconnectAttempts, 30000); // Max 30 seconds
+                const delay = Math.min(5000 * this.reconnectAttempts, 30000);
                 console.log(`🔄 Reconnecting in ${delay/1000}s... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
                 setTimeout(() => this.init(), delay);
             } else {
                 console.log('❌ Max reconnection attempts or logged out');
                 if (statusCode === DisconnectReason.loggedOut) {
-                    console.log('🔄 Clearing auth data and restarting...');
+                    console.log('🔄 Clearing auth data...');
                     this.clearAuthData();
                 }
             }
@@ -108,7 +104,6 @@ class WhatsAppBot {
             this.isConnected = true;
             this.reconnectAttempts = 0;
             console.log('✅ Connected to WhatsApp! Bot is ready.');
-            this.sendStartupMessage();
         } else if (connection === 'connecting') {
             console.log('🔄 Connecting to WhatsApp servers...');
         }
@@ -153,8 +148,14 @@ class WhatsAppBot {
         }
     }
 
-    async sendStartupMessage() {
-        console.log('🤖 Bot is ready! Commands: !menu, !help, !ping');
+    async sendButtonMessage(to, buttonMessage) {
+        try {
+            return await this.sendMessage(to, buttonMessage);
+        } catch (error) {
+            console.error('Error sending button message:', error);
+            await this.sendMessage(to, { text: buttonMessage.text });
+            return false;
+        }
     }
 
     handleInitError(error) {
@@ -162,7 +163,7 @@ class WhatsAppBot {
         
         if (this.reconnectAttempts < this.maxReconnectAttempts) {
             this.reconnectAttempts++;
-            const delay = 10000; // 10 seconds
+            const delay = 10000;
             console.log(`🔄 Retrying in ${delay/1000}s... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
             setTimeout(() => this.init(), delay);
         }
@@ -170,7 +171,6 @@ class WhatsAppBot {
 
     clearAuthData() {
         const fs = require('fs');
-        const path = require('path');
         
         try {
             const authDir = './auth_info';
@@ -178,7 +178,6 @@ class WhatsAppBot {
                 fs.rmSync(authDir, { recursive: true, force: true });
                 console.log('🧹 Auth data cleared');
             }
-            // Restart after clearing auth
             setTimeout(() => this.init(), 3000);
         } catch (error) {
             console.error('Error clearing auth data:', error);
@@ -213,8 +212,13 @@ const bot = new WhatsAppBot();
 bot.init();
 
 // Process handlers
+process.on('SIGTERM', () => {
+    console.log('🛑 Received SIGTERM, shutting down gracefully...');
+    process.exit(0);
+});
+
 process.on('SIGINT', () => {
-    console.log('\n🛑 Shutting down...');
+    console.log('🛑 Received SIGINT, shutting down gracefully...');
     process.exit(0);
 });
 
@@ -226,5 +230,7 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('💥 Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
-// Keep alive
-setInterval(() => {}, 1000);
+// Keep process alive
+setInterval(() => {
+    // Heartbeat to keep process alive
+}, 60000);

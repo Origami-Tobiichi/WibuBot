@@ -1,110 +1,306 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
+const pino = require('pino');
 const { Boom } = require('@hapi/boom');
-const fs = require('fs');
-const path = require('path');
-const chalk = require('chalk');
 const qrcode = require('qrcode-terminal');
+const path = require('path');
+const fs = require('fs').promises;
 
 // Import handlers and managers
 const MessageHandler = require('./handlers');
-const SessionManager = require('./sessionManager');
 const ButtonManager = require('./buttonManager');
-const VoiceHandler = require('./voiceHandler');
 
 class WhatsAppBot {
     constructor() {
         this.sock = null;
-        this.isConnected = false;
-        this.sessionManager = new SessionManager();
+        this.messageHandler = null;
         this.buttonManager = new ButtonManager();
-        this.voiceHandler = new VoiceHandler();
-        this.messageHandler = new MessageHandler(this);
+        this.isConnected = false;
+        this.reconnectAttempts = 0;
+        this.maxReconnectAttempts = 5;
         
-        this.init();
+        // Bind methods to maintain context
+        this.init = this.init.bind(this);
+        this.setupEventHandlers = this.setupEventHandlers.bind(this);
+        this.handleConnectionUpdate = this.handleConnectionUpdate.bind(this);
+        this.handleMessagesUpsert = this.handleMessagesUpsert.bind(this);
     }
 
     async init() {
         try {
-            const { state, saveCreds } = await useMultiFileAuthState('./data/sessions');
-            const { version } = await fetchLatestBaileysVersion();
+            console.log('🚀 Initializing WhatsApp Bot...');
+            
+            // Ensure auth directory exists
+            await this.ensureAuthDirectory();
+            
+            const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
             
             this.sock = makeWASocket({
-                version,
-                logger: { level: 'silent' },
-                printQRInTerminal: false,
-                auth: {
-                    creds: state.creds,
-                    keys: makeCacheableSignalKeyStore(state.keys, {
-                        logger: { level: 'silent' }
-                    }),
-                },
-                generateHighQualityLinkPreview: true,
+                auth: state,
+                printQRInTerminal: true,
+                logger: pino({ level: 'warn' }),
+                browser: Browsers.ubuntu('Chrome'),
                 markOnlineOnConnect: true,
-                getMessage: async (key) => {
-                    return {};
-                }
+                generateHighQualityLinkPreview: true,
+                syncFullHistory: false,
+                retryRequestDelayMs: 1000,
+                maxRetries: 5
             });
 
-            this.sock.ev.on('creds.update', saveCreds);
-            this.setupEventHandlers();
+            this.messageHandler = new MessageHandler(this);
+            
+            this.setupEventHandlers(saveCreds);
+            console.log('✅ WhatsApp Bot initialized successfully');
             
         } catch (error) {
-            console.error(chalk.red('Error initializing bot:'), error);
+            console.error('❌ Error initializing bot:', error);
+            this.handleInitError(error);
         }
     }
 
-    setupEventHandlers() {
-        this.sock.ev.on('connection.update', (update) => {
-            const { connection, lastDisconnect, qr } = update;
-            
-            if (qr) {
-                console.log(chalk.yellow('Scan QR Code below:'));
-                qrcode.generate(qr, { small: true });
-            }
-            
-            if (connection === 'close') {
-                const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-                console.log(chalk.red('Connection closed, reconnecting...'));
-                
-                if (shouldReconnect) {
-                    this.init();
-                }
-            } else if (connection === 'open') {
-                this.isConnected = true;
-                console.log(chalk.green('✅ Bot connected successfully!'));
-                this.sendWelcomeMessages();
-            }
-        });
-
-        this.sock.ev.on('messages.upsert', async (m) => {
-            const message = m.messages[0];
-            if (!message.message || message.key.fromMe) return;
-            
-            await this.messageHandler.handleMessage(message);
-        });
-    }
-
-    async sendWelcomeMessages() {
-        // Send welcome message to owner
-        const ownerNumber = process.env.OWNER_NUMBER;
-        if (ownerNumber) {
-            const welcomeMsg = `🤖 *Bot Started Successfully!*\n\n` +
-                `🕐 *Time:* ${new Date().toLocaleString()}\n` +
-                `📊 *Status:* Connected\n` +
-                `👤 *Owner:* ${ownerNumber}\n\n` +
-                `Bot is now ready to receive commands!`;
-            
-            await this.sendMessage(ownerNumber, welcomeMsg);
-        }
-    }
-
-    async sendMessage(jid, content, options = {}) {
+    async ensureAuthDirectory() {
         try {
-            await this.sock.sendMessage(jid, content, options);
+            await fs.mkdir('./auth_info', { recursive: true });
         } catch (error) {
-            console.error(chalk.red('Error sending message:'), error);
+            console.error('Error creating auth directory:', error);
         }
+    }
+
+    setupEventHandlers(saveCreds) {
+        // Connection update handler
+        this.sock.ev.on('connection.update', this.handleConnectionUpdate);
+
+        // Credentials update handler
+        this.sock.ev.on('creds.update', saveCreds);
+
+        // Messages handler
+        this.sock.ev.on('messages.upsert', this.handleMessagesUpsert);
+
+        // Additional event handlers for stability
+        this.sock.ev.on('connection.phone-change', (update) => {
+            console.log('Phone change detected:', update);
+        });
+
+        this.sock.ev.on('connection.device-change', (update) => {
+            console.log('Device change detected:', update);
+        });
+    }
+
+    handleConnectionUpdate(update) {
+        const { connection, lastDisconnect, qr } = update;
+        
+        if (qr) {
+            console.log('📱 Scan QR Code below:');
+            qrcode.generate(qr, { small: true });
+        }
+
+        if (connection === 'close') {
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            
+            console.log(`🔌 Connection closed. Status: ${statusCode}, Reconnecting: ${shouldReconnect}`);
+            
+            if (shouldReconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
+                this.reconnectAttempts++;
+                console.log(`🔄 Attempting reconnect... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+                setTimeout(() => this.init(), 5000);
+            } else {
+                console.log('❌ Max reconnection attempts reached or logged out. Please restart bot.');
+                process.exit(1);
+            }
+            
+        } else if (connection === 'open') {
+            this.isConnected = true;
+            this.reconnectAttempts = 0;
+            console.log('✅ Connected to WhatsApp successfully!');
+            this.sendStartupMessage();
+        } else if (connection === 'connecting') {
+            console.log('🔄 Connecting to WhatsApp...');
+        }
+    }
+
+    async handleMessagesUpsert(m) {
+        try {
+            const message = m.messages[0];
+            if (!message) return;
+
+            // Ignore if message is from status broadcast
+            if (message.key.remoteJid === 'status@broadcast') return;
+
+            // Handle button responses
+            if (message.message?.buttonsResponseMessage) {
+                await this.handleButtonResponse(message);
+                return;
+            }
+
+            // Handle regular messages
+            const hasContent = message.message?.conversation || 
+                             message.message?.extendedTextMessage?.text ||
+                             message.message?.imageMessage ||
+                             message.message?.videoMessage;
+
+            if (hasContent) {
+                await this.handleMessage(message);
+            }
+
+        } catch (error) {
+            console.error('Error in messages.upsert handler:', error);
+        }
+    }
+
+    async handleMessage(message) {
+        try {
+            const messageType = Object.keys(message.message)[0];
+            let body = '';
+            
+            if (messageType === 'conversation') {
+                body = message.message.conversation;
+            } else if (messageType === 'extendedTextMessage') {
+                body = message.message.extendedTextMessage.text;
+            }
+            
+            const formattedMessage = {
+                from: message.key.remoteJid,
+                body: body,
+                type: messageType,
+                pushName: message.pushName,
+                timestamp: message.messageTimestamp,
+                isGroup: message.key.remoteJid?.endsWith('@g.us') || false
+            };
+
+            await this.messageHandler.handleMessage(formattedMessage);
+            
+        } catch (error) {
+            console.error('Error handling message:', error);
+        }
+    }
+
+    async handleButtonResponse(message) {
+        try {
+            const buttonId = message.message.buttonsResponseMessage.selectedButtonId;
+            const from = message.key.remoteJid;
+            
+            console.log(`Button pressed: ${buttonId} from ${from}`);
+            
+            const response = this.buttonManager.handleButtonResponse(buttonId);
+            await this.sendMessage(from, { text: response });
+            
+        } catch (error) {
+            console.error('Error handling button response:', error);
+        }
+    }
+
+    async sendMessage(to, content) {
+        try {
+            if (!this.isConnected) {
+                console.log('⚠️ Bot not connected, cannot send message');
+                return false;
+            }
+
+            await this.sock.sendMessage(to, content);
+            return true;
+        } catch (error) {
+            console.error('❌ Error sending message:', error);
+            return false;
+        }
+    }
+
+    async sendButtonMessage(to, buttonMessage) {
+        try {
+            return await this.sendMessage(to, buttonMessage);
+        } catch (error) {
+            console.error('Error sending button message:', error);
+            // Fallback to text message
+            await this.sendMessage(to, { text: buttonMessage.text });
+            return false;
+        }
+    }
+
+    async sendStartupMessage() {
+        try {
+            console.log('🤖 Bot is now ready to receive messages!');
+            console.log('📝 Available commands: !menu, !help, !info, !stats');
+            
+            // You can send a startup message to your number here
+            // const ownerNumber = '628xxxxxxxxxx@s.whatsapp.net';
+            // await this.sendMessage(ownerNumber, { 
+            //     text: '✅ Bot started successfully!\n' + new Date().toLocaleString() 
+            // });
+            
+        } catch (error) {
+            console.error('Error sending startup message:', error);
+        }
+    }
+
+    handleInitError(error) {
+        console.error('Bot initialization failed:', error);
+        
+        // Try to reconnect after 10 seconds
+        if (this.reconnectAttempts < this.maxReconnectAttempts) {
+            this.reconnectAttempts++;
+            console.log(`Retrying initialization... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+            setTimeout(() => this.init(), 10000);
+        } else {
+            console.log('Max initialization attempts reached. Exiting.');
+            process.exit(1);
+        }
+    }
+
+    // Public method to access button manager
+    getButtonManager() {
+        return this.buttonManager;
+    }
+
+    // Graceful shutdown
+    async shutdown() {
+        console.log('👋 Shutting down bot gracefully...');
+        this.isConnected = false;
+        
+        if (this.sock) {
+            try {
+                await this.sock.end();
+            } catch (error) {
+                console.error('Error during shutdown:', error);
+            }
+        }
+        
+        process.exit(0);
     }
 }
 
-module.exports = WhatsAppBot;
+// Create and start the bot
+console.log('🚀 Starting WhatsApp Bot Ultimate v3.0.0...');
+
+const bot = new WhatsAppBot();
+bot.init();
+
+// Handle process events for graceful shutdown
+process.on('SIGINT', () => {
+    console.log('\n📞 Received SIGINT signal');
+    bot.shutdown();
+});
+
+process.on('SIGTERM', () => {
+    console.log('\n📞 Received SIGTERM signal');
+    bot.shutdown();
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('💥 Uncaught Exception:', error);
+    // Don't exit immediately, try to recover
+    setTimeout(() => {
+        console.log('Restarting after uncaught exception...');
+        bot.init();
+    }, 5000);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('💥 Unhandled Rejection at:', promise, 'reason:', reason);
+    // Log the error but don't exit
+});
+
+// Keep the process alive
+setInterval(() => {
+    // This keeps the event loop active
+}, 1000);
+
+console.log('✅ Bot process started successfully');module.exports = WhatsAppBot;
